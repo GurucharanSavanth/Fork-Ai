@@ -5,6 +5,9 @@ import re
 import anthropic
 import backoff
 import openai
+from google.cloud import aiplatform
+
+from ai_scientist.rate_limit import rate_limiter
 
 MAX_NUM_TOKENS = 4096
 
@@ -17,7 +20,12 @@ AVAILABLE_LLMS = [
     "o1-preview-2024-09-12",
     "o1-mini-2024-09-12",
     "deepseek-coder-v2-0724",
-    "llama3.1-405b",
+    "llama3.3-70b",
+    "llama3.3-70b-local",
+    "llama3.2:1b",
+    "llama3.1:8b",  # New viable option with segmented templates
+    "gemini-pro",
+    "grok-1",
     # Anthropic Claude models via Amazon Bedrock
     "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
     "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0",
@@ -32,8 +40,31 @@ AVAILABLE_LLMS = [
     "vertex_ai/claude-3-haiku@20240307",
 ]
 
+class Model:
+    def __init__(self, model_name, system_message="You are a helpful AI assistant."):
+        self.model_name = model_name
+        self.system_message = system_message
+        self.client, self.client_model = create_client(model_name)
+        self.msg_history = []
+        # Determine edit format based on model capabilities
+        self.edit_format = "whole" if model_name in ["llama3.1:8b", "llama3.2:1b"] else "diff"
+
+    @rate_limiter.handle_rate_limit(lambda self: self.model_name)
+    def get_response(self, msg, temperature=0.75, print_debug=False):
+        content, self.msg_history = get_response_from_llm(
+            msg=msg,
+            client=self.client,
+            model=self.model_name,
+            system_message=self.system_message,
+            print_debug=print_debug,
+            msg_history=self.msg_history,
+            temperature=temperature,
+            edit_format=self.edit_format  # Pass edit format to get_response_from_llm
+        )
+        return content
 
 # Get N responses from a single message, used for ensembling.
+@rate_limiter.handle_rate_limit(lambda args: args[2])
 @backoff.on_exception(backoff.expo, (openai.RateLimitError, openai.APITimeoutError))
 def get_batch_responses_from_llm(
         msg,
@@ -62,7 +93,7 @@ def get_batch_responses_from_llm(
             ],
             temperature=temperature,
             max_tokens=MAX_NUM_TOKENS,
-            n=n_responses,
+            n=n_responses,  # Fix parameter position
             stop=None,
             seed=0,
         )
@@ -97,7 +128,7 @@ def get_batch_responses_from_llm(
             ],
             temperature=temperature,
             max_tokens=MAX_NUM_TOKENS,
-            n=n_responses,
+            n_responses,
             stop=None,
         )
         content = [r.message.content for r in response.choices]
@@ -132,6 +163,7 @@ def get_batch_responses_from_llm(
     return content, new_msg_history
 
 
+@rate_limiter.handle_rate_limit(lambda args: args[2])
 @backoff.on_exception(backoff.expo, (openai.RateLimitError, openai.APITimeoutError))
 def get_response_from_llm(
         msg,
@@ -141,7 +173,12 @@ def get_response_from_llm(
         print_debug=False,
         msg_history=None,
         temperature=0.75,
+        edit_format="diff"  # Default to diff mode for stronger models
 ):
+    # Use "whole" mode for weaker models that benefit from segmented templates
+    if model in ["llama3.1:8b", "llama3.2:1b"]:
+        edit_format = "whole"
+
     if msg_history is None:
         msg_history = []
 
@@ -196,26 +233,19 @@ def get_response_from_llm(
         )
         content = response.choices[0].message.content
         new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
-    elif model in ["o1-preview-2024-09-12", "o1-mini-2024-09-12"]:
+    elif model == "gemini-pro":
+        new_msg_history = msg_history + [{"role": "user", "content": msg}]
+        response = client.generate_text(
+            prompt=f"{system_message}\n\n{msg}",
+            temperature=temperature,
+            max_output_tokens=MAX_NUM_TOKENS,
+        )
+        content = response.text
+        new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
+    elif model == "grok-1":
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
         response = client.chat.completions.create(
             model=model,
-            messages=[
-                {"role": "user", "content": system_message},
-                *new_msg_history,
-            ],
-            temperature=1,
-            max_completion_tokens=MAX_NUM_TOKENS,
-            n=1,
-            #stop=None,
-            seed=0,
-        )
-        content = response.choices[0].message.content
-        new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
-    elif model == "deepseek-coder-v2-0724":
-        new_msg_history = msg_history + [{"role": "user", "content": msg}]
-        response = client.chat.completions.create(
-            model="deepseek-coder",
             messages=[
                 {"role": "system", "content": system_message},
                 *new_msg_history,
@@ -227,10 +257,16 @@ def get_response_from_llm(
         )
         content = response.choices[0].message.content
         new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
-    elif model in ["meta-llama/llama-3.1-405b-instruct", "llama-3-1-405b-instruct"]:
+    elif model in ["llama3.3-70b", "llama3.3-70b-local", "llama3.2:1b", "llama3.1:8b"]:
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
+        model_name = {
+            "llama3.3-70b": "meta-llama/llama-3.3-70b-instruct",
+            "llama3.3-70b-local": "llama2",
+            "llama3.2:1b": "llama3.2:1b",
+            "llama3.1:8b": "llama3.1:8b"
+        }[model]
         response = client.chat.completions.create(
-            model="meta-llama/llama-3.1-405b-instruct",
+            model=model_name,
             messages=[
                 {"role": "system", "content": system_message},
                 *new_msg_history,
@@ -309,11 +345,28 @@ def create_client(model):
             api_key=os.environ["DEEPSEEK_API_KEY"],
             base_url="https://api.deepseek.com"
         ), model
-    elif model == "llama3.1-405b":
-        print(f"Using OpenAI API with {model}.")
+    elif model == "llama3.3-70b":
+        print(f"Using OpenRouter API with {model}.")
         return openai.OpenAI(
             api_key=os.environ["OPENROUTER_API_KEY"],
             base_url="https://openrouter.ai/api/v1"
-        ), "meta-llama/llama-3.1-405b-instruct"
+        ), "meta-llama/llama-3.3-70b-instruct"
+    elif model in ["llama3.3-70b-local", "llama3.2:1b", "llama3.1:8b"]:
+        print(f"Using Ollama API with {model}.")
+        return openai.OpenAI(
+            base_url="http://localhost:11434/v1",
+            api_key="ollama"  # required but unused
+        ), model
+    elif model == "gemini-pro":
+        if "GOOGLE_APPLICATION_CREDENTIALS" not in os.environ:
+            raise ValueError("GOOGLE_APPLICATION_CREDENTIALS environment variable is required for Gemini models")
+        print(f"Using Google Cloud API with {model}.")
+        return aiplatform.TextGenerationModel.from_pretrained("text-bison@002"), model
+    elif model == "grok-1":
+        print(f"Using xAI API with {model}.")
+        return openai.OpenAI(
+            api_key=os.environ["XAI_API_KEY"],
+            base_url="https://api.xai.com/v1"
+        ), model
     else:
         raise ValueError(f"Model {model} not supported.")
