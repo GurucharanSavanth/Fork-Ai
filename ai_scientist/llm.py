@@ -3,8 +3,11 @@ import os
 import re
 
 import anthropic
-import backoff
 import openai
+import google.cloud.aiplatform as vertexai
+from google.cloud.aiplatform.generative_models import GenerativeModel
+
+from .rate_limit import rate_limit_handler
 
 MAX_NUM_TOKENS = 4096
 
@@ -34,7 +37,7 @@ AVAILABLE_LLMS = [
 
 
 # Get N responses from a single message, used for ensembling.
-@backoff.on_exception(backoff.expo, (openai.RateLimitError, openai.APITimeoutError))
+@rate_limit_handler.handle_rate_limit("gpt-4")  # Default model for rate limit handling
 def get_batch_responses_from_llm(
         msg,
         client,
@@ -80,7 +83,7 @@ def get_batch_responses_from_llm(
             ],
             temperature=temperature,
             max_tokens=MAX_NUM_TOKENS,
-            n=n_responses,
+            n_responses=n_responses,
             stop=None,
         )
         content = [r.message.content for r in response.choices]
@@ -97,7 +100,7 @@ def get_batch_responses_from_llm(
             ],
             temperature=temperature,
             max_tokens=MAX_NUM_TOKENS,
-            n=n_responses,
+            n_responses=n_responses,
             stop=None,
         )
         content = [r.message.content for r in response.choices]
@@ -132,7 +135,7 @@ def get_batch_responses_from_llm(
     return content, new_msg_history
 
 
-@backoff.on_exception(backoff.expo, (openai.RateLimitError, openai.APITimeoutError))
+@rate_limit_handler.handle_rate_limit("gpt-4")  # Default model for rate limit handling
 def get_response_from_llm(
         msg,
         client,
