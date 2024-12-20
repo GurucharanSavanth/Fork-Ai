@@ -1,10 +1,14 @@
 import json
 import os
 import re
+import time
+import logging
 
 import anthropic
 import backoff
 import openai
+
+from ai_scientist.utils.rate_limiter import APIRateLimiter
 
 MAX_NUM_TOKENS = 4096
 
@@ -32,9 +36,29 @@ AVAILABLE_LLMS = [
     "vertex_ai/claude-3-haiku@20240307",
 ]
 
+rate_limiter = APIRateLimiter()
+logger = logging.getLogger(__name__)
 
-# Get N responses from a single message, used for ensembling.
-@backoff.on_exception(backoff.expo, (openai.RateLimitError, openai.APITimeoutError))
+def get_provider_from_model(model: str) -> str:
+    if "claude" in model or model.startswith("bedrock/anthropic") or (model.startswith("vertex_ai") and "claude" in model):
+        return "anthropic"
+    elif "gpt" in model or model.startswith("o1-"):
+        return "openai"
+    elif model == "deepseek-coder-v2-0724":
+        return "deepseek"
+    elif "llama" in model:
+        return "openrouter"
+    else:
+        return "unknown"
+
+@backoff.on_exception(
+    backoff.expo,
+    (openai.RateLimitError, openai.APITimeoutError, anthropic.RateLimitError),
+    on_backoff=lambda details, _model=None: rate_limiter.handle_backoff({
+        "provider": get_provider_from_model(_model),
+        **details
+    })
+)
 def get_batch_responses_from_llm(
         msg,
         client,
@@ -45,6 +69,11 @@ def get_batch_responses_from_llm(
         temperature=0.75,
         n_responses=1,
 ):
+    # Update the model parameter in the decorator's closure
+    get_batch_responses_from_llm._model = model
+    provider = get_provider_from_model(model)
+    rate_limiter.handle_request(provider)
+
     if msg_history is None:
         msg_history = []
 
@@ -131,8 +160,14 @@ def get_batch_responses_from_llm(
 
     return content, new_msg_history
 
-
-@backoff.on_exception(backoff.expo, (openai.RateLimitError, openai.APITimeoutError))
+@backoff.on_exception(
+    backoff.expo,
+    (openai.RateLimitError, openai.APITimeoutError, anthropic.RateLimitError),
+    on_backoff=lambda details, _model=None: rate_limiter.handle_backoff({
+        "provider": get_provider_from_model(_model),
+        **details
+    })
+)
 def get_response_from_llm(
         msg,
         client,
@@ -142,6 +177,9 @@ def get_response_from_llm(
         msg_history=None,
         temperature=0.75,
 ):
+    provider = get_provider_from_model(model)
+    rate_limiter.handle_request(provider)
+
     if msg_history is None:
         msg_history = []
 
@@ -256,7 +294,6 @@ def get_response_from_llm(
 
     return content, new_msg_history
 
-
 def extract_json_between_markers(llm_output):
     # Regular expression pattern to find JSON content between ```json and ```
     json_pattern = r"```json(.*?)```"
@@ -283,7 +320,6 @@ def extract_json_between_markers(llm_output):
                 continue  # Try next match
 
     return None  # No valid JSON found
-
 
 def create_client(model):
     if model.startswith("claude-"):
