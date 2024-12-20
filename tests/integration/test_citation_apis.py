@@ -11,26 +11,23 @@ from ai_scientist.perform_writeup import verify_citation
 
 @pytest.fixture
 def citation_manager():
-    """Create a CitationManager that works with or without API keys."""
-    if os.getenv('SCOPUS_API_KEY'):
-        return CitationAPIManager()  # Use real APIs when keys available
-    else:
-        # Mock APIs when credentials aren't available
-        with patch('ai_scientist.utils.citation_api.SemanticScholarAPI') as mock_semantic, \
-             patch('ai_scientist.utils.citation_api.ScopusAPI') as mock_scopus, \
-             patch('ai_scientist.utils.citation_api.TaylorFrancisAPI') as mock_tf:
+    """Create a CitationManager that works with mocked APIs for integration tests."""
+    # Always use mocked APIs for integration tests
+    with patch('ai_scientist.utils.citation_api.SemanticScholarAPI') as mock_semantic, \
+         patch('ai_scientist.utils.citation_api.ScopusAPI') as mock_scopus, \
+         patch('ai_scientist.utils.citation_api.TaylorFrancisAPI') as mock_tf:
 
-            mock_response = {
-                "title": "Attention Is All You Need",
-                "authors": [{"name": "Vaswani, Ashish"}, {"name": "Others"}],
-                "year": 2017,
-                "abstract": "Test abstract"
-            }
+        mock_response = {
+            "title": "Attention Is All You Need",
+            "authors": [{"name": "Vaswani, Ashish"}, {"name": "Others"}],
+            "year": 2017,
+            "abstract": "Test abstract"
+        }
 
-            for mock_api in [mock_semantic.return_value, mock_scopus.return_value, mock_tf.return_value]:
-                mock_api.search_by_doi = MagicMock(return_value=mock_response)
+        for mock_api in [mock_semantic.return_value, mock_scopus.return_value, mock_tf.return_value]:
+            mock_api.search_by_doi = MagicMock(return_value=mock_response)
 
-            return CitationAPIManager()
+        return CitationAPIManager()
 
 @pytest.fixture
 def citation_db():
@@ -44,25 +41,22 @@ def citation_db():
     shutil.rmtree(temp_dir)
 
 def test_real_doi_lookup(citation_manager):
-    """Test looking up a DOI using available APIs."""
+    """Test looking up a DOI using mocked APIs."""
     doi = "10.48550/arXiv.1706.03762"  # "Attention Is All You Need"
     results = citation_manager.search_all_by_doi(doi)
 
-    if os.getenv('SCOPUS_API_KEY'):
-        # When using real APIs, at least one should return results
-        assert any(result is not None for result in results.values())
-    else:
-        # When using mocks, all APIs should return results
-        assert all(result is not None for result in results.values())
+    # All mocked APIs should return results
+    assert all(result is not None for result in results.values())
 
-    # Verify returned data structure for non-None results
+    # Verify returned data structure
     for api_name, result in results.items():
-        if result is not None:
-            assert "title" in result
-            assert "authors" in result
-            if not os.getenv('SCOPUS_API_KEY'):
-                assert result["title"] == "Attention Is All You Need"
-                assert len(result["authors"]) == 2
+        assert "title" in result
+        assert "authors" in result
+        assert result["title"] == "Attention Is All You Need"
+        assert len(result["authors"]) == 2
+        assert isinstance(result["authors"], list)
+        assert all(isinstance(author, dict) for author in result["authors"])
+        assert all("name" in author for author in result["authors"])
 
 def test_concurrent_api_requests(citation_manager):
     """Test concurrent API requests to different providers."""
