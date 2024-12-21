@@ -135,7 +135,7 @@ class TaylorFrancisAPI(BaseCitationAPI):
             return None
 
 class CitationAPIManager:
-    """Manager class for handling multiple citation APIs."""
+    """Manager class for handling multiple citation APIs with comprehensive error handling."""
     def __init__(self):
         self.rate_limiter = APIRateLimiter()
         self.apis = {
@@ -145,15 +145,22 @@ class CitationAPIManager:
         }
 
     def search_all_by_doi(self, doi: str) -> Dict[str, Optional[Dict]]:
-        """Search for a paper across all available APIs."""
+        """Search for a paper across all available APIs with error handling."""
         results = {}
         for api_name, api in self.apis.items():
-            results[api_name] = api.search_by_doi(doi)
+            try:
+                results[api_name] = api.search_by_doi(doi)
+            except Exception as e:
+                logger.error(f"Error searching {api_name} for DOI {doi}: {e}")
+                results[api_name] = None
         return results
 
     def get_full_text(self, doi: str) -> Optional[str]:
-        """Try to get full text from any available API."""
-        for api in self.apis.values():
-            if text := api.get_full_text(doi):
-                return text
+        """Try to get full text from any available API with error handling."""
+        for api_name, api in self.apis.items():
+            try:
+                if text := api.get_full_text(doi):
+                    return text
+            except Exception as e:
+                logger.error(f"Error getting full text from {api_name} for DOI {doi}: {e}")
         return None

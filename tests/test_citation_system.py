@@ -101,7 +101,7 @@ class TestCitationSystem(unittest.TestCase):
         self.assertEqual(citation.title, "Test Paper")
 
     def test_verify_citation(self):
-        """Test citation verification."""
+        """Test citation verification using both DOI and cite_key."""
         # Add an unverified citation
         self.citation_db.add_citation(
             cite_key="test_paper",
@@ -109,12 +109,24 @@ class TestCitationSystem(unittest.TestCase):
             authors="Test Author",
             doi="10.1234/test"
         )
-        # Verify it
+        # Verify using DOI
         result = self.citation_db.verify_citation("10.1234/test")
         self.assertTrue(result)
         # Check that it's marked as verified
         citation = self.citation_db.get_citation("10.1234/test")
         self.assertTrue(citation.verified)
+
+        # Verify using cite_key
+        citation2 = self.citation_db.add_citation(
+            cite_key="another_paper",
+            title="Another Paper",
+            authors="Another Author",
+            doi="10.1234/test2"
+        )
+        result2 = self.citation_db.verify_citation("another_paper")
+        self.assertTrue(result2)
+        citation2 = self.citation_db.get_citation("another_paper")
+        self.assertTrue(citation2.verified)
 
     def test_verify_nonexistent_citation(self):
         """Test verification of non-existent citation."""

@@ -70,14 +70,18 @@ class CitationDB:
         finally:
             session.close()
 
-    def verify_citation(self, doi):
-        """Mark a citation as verified."""
+    def verify_citation(self, identifier: str) -> bool:
+        """Mark a citation as verified using either DOI or cite_key."""
         session = self.Session()
         try:
-            citation = session.query(Citation).filter(Citation.doi == doi).first()
+            # Use the session directly to query and update
+            citation = session.query(Citation).filter(
+                (Citation.doi == identifier) | (Citation.cite_key == identifier)
+            ).first()
             if citation:
                 citation.verified = True
                 session.commit()
+                session.refresh(citation)  # Ensure the change is reflected
                 return True
             return False
         finally:
