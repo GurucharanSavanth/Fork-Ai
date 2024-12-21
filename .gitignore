@@ -172,3 +172,9 @@ ICLR2022-OpenReviewData/
 templates/*/run_0/
 templates/*/*.png
 results/*
+
+# Python version file
+.python-version
+
+# SQLite database
+citations.db
